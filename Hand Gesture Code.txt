@@ -1,0 +1,229 @@
+import os
+import threading
+import tkinter as tk
+from tkinter import messagebox
+import cv2
+import mediapipe as mp
+import numpy as np
+import pyautogui
+import time
+
+# Set environment to development to avoid warnings
+os.environ['FLASK_ENV'] = 'development'
+
+# Initialize MediaPipe Hand model
+mp_hands = mp.solutions.hands
+hands = mp_hands.Hands(max_num_hands=1, min_detection_confidence=0.7, min_tracking_confidence=0.7)
+mp_draw = mp.solutions.drawing_utils
+
+# Initialize webcam
+cap = cv2.VideoCapture(0)
+
+# Get screen size
+screen_width, screen_height = pyautogui.size()
+
+recognition_running = False
+
+def calculate_finger_status(hand_landmarks, is_left_hand):
+    finger_status = []
+
+    # Thumb
+    thumb_is_up = (hand_landmarks[4].x > hand_landmarks[3].x) if is_left_hand else (hand_landmarks[4].x < hand_landmarks[3].x)
+    finger_status.append(thumb_is_up)
+
+    # Index finger
+    finger_status.append(hand_landmarks[8].y < hand_landmarks[6].y)
+
+    # Middle finger
+    finger_status.append(hand_landmarks[12].y < hand_landmarks[10].y)
+
+    # Ring finger
+    finger_status.append(hand_landmarks[16].y < hand_landmarks[14].y)
+
+    # Pinky
+    finger_status.append(hand_landmarks[20].y < hand_landmarks[18].y)
+
+    return finger_status
+
+def detect_gestures(finger_status, hand_landmarks, is_left_hand):
+    # Cursor movement: Index and middle finger up, all other fingers down
+    if finger_status[1] and finger_status[2] and not finger_status[0] and not finger_status[3] and not finger_status[4]:
+        return "Move Cursor"
+
+    # Left Click: Tap or down index and middle fingers while remaining fingers are down
+    if not finger_status[1] and not finger_status[2] and not finger_status[3] and not finger_status[4] and not finger_status[0]:
+        return "Left Click"
+
+    # Right Click: All four fingers down, thumb is up or pointing left (adjusted for left hand)
+    if finger_status[0] and not finger_status[1] and not finger_status[2] and not finger_status[3] and not finger_status[4]:
+        return "Right Click"
+
+    # Volume Up: Right hand little finger up, all other fingers down
+    if not is_left_hand and finger_status[4] and not finger_status[0] and not finger_status[1] and not finger_status[2] and not finger_status[3]:
+        return "Volume Up"
+
+    # Volume Down: Left hand little finger up, all other fingers down
+    if is_left_hand and finger_status[4] and not finger_status[0] and not finger_status[1] and not finger_status[2] and not finger_status[3]:
+        return "Volume Down"
+
+    # Screenshot: All five fingers up
+    elif all(finger_status):
+        return "Screenshot"
+
+    # Index finger up and middle finger down (Scroll Down)
+    elif finger_status[1] and not finger_status[2]:
+        return "Scroll Down"
+
+    # Middle finger up and index finger down (Scroll Up)
+    elif finger_status[2] and not finger_status[1]:
+        return "Scroll Up"
+
+    # Skip Video: Index, middle, ring, and pinky fingers tapped together, thumb down
+    if not finger_status[0] and all(finger_status[1:]):
+        return "Skip Video"
+
+    return "Unknown"
+
+def start_gesture_recognition():
+    global recognition_running
+    recognition_running = True
+    while recognition_running:
+        success, image = cap.read()
+        if not success:
+            break
+
+        # Flip the image horizontally for a later selfie-view display
+        image = cv2.flip(image, 1)
+
+        # Convert the BGR image to RGB
+        rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+
+        # Process the image and find hands
+        result = hands.process(rgb_image)
+
+        # Draw the hand annotations on the image
+        if result.multi_hand_landmarks:
+            for hand_landmarks, hand_handedness in zip(result.multi_hand_landmarks, result.multi_handedness):
+                mp_draw.draw_landmarks(image, hand_landmarks, mp_hands.HAND_CONNECTIONS)
+
+                # Determine if it's the left hand
+                is_left_hand = hand_handedness.classification[0].label == 'Left'
+
+                # Calculate finger status
+                finger_status = calculate_finger_status(hand_landmarks.landmark, is_left_hand)
+
+                # Detect gestures
+                gesture = detect_gestures(finger_status, hand_landmarks.landmark, is_left_hand)
+
+                # Perform actions based on the gesture
+                if gesture == "Move Cursor":
+                    index_finger_tip = hand_landmarks.landmark[8]
+                    screen_x = np.interp(index_finger_tip.x, [0, 1], [0, screen_width])
+                    screen_y = np.interp(index_finger_tip.y, [0, 1], [0, screen_height])
+                    pyautogui.moveTo(screen_x, screen_y)
+                elif gesture == "Left Click":
+                    pyautogui.click(button='left')
+                elif gesture == "Right Click":
+                    pyautogui.click(button='right')
+                elif gesture == "Scroll Up":
+                    pyautogui.scroll(100)  # Scroll Up
+                elif gesture == "Scroll Down":
+                    pyautogui.scroll(-100)  # Scroll Down
+                elif gesture == "Volume Up":
+                    pyautogui.press("volumeup")
+                elif gesture == "Volume Down":
+                    pyautogui.press("volumedown")
+                elif gesture == "Screenshot":
+                    pyautogui.screenshot("screenshot.png")
+                    print("Screenshot taken")
+                elif gesture == "Skip Video":
+                    pyautogui.press("right")  # Skip forward 10 seconds
+
+        # Display the resulting image
+        cv2.imshow('Hand Gesture Control', image)
+
+        # Break the loop on 'q' key press
+        key = cv2.waitKey(1)
+        if key & 0xFF == ord('q'):
+            break
+
+    cap.release()
+    cv2.destroyAllWindows()
+
+def stop_gesture_recognition():
+    global recognition_running
+    recognition_running = False
+
+class Application(tk.Frame):
+    def __init__(self, master=None):
+        super().__init__(master)
+        self.master = master
+        self.pack()
+        self.create_widgets()
+        self.theme = "light"
+        self.connection_status = "Disconnected"
+
+    def create_widgets(self):
+        self.master.title("Hand Gesture Recognition")
+
+        # Create a title label
+        self.title_label = tk.Label(self, text="Hand Gesture Recognition", font=("Arial", 24, "bold"), bg="#212121", fg="white")
+        self.title_label.pack(pady=20)
+
+        # Create a frame to hold the buttons
+        self.button_frame = tk.Frame(self, bg="#212121")
+        self.button_frame.pack(pady=20)
+
+        # Create the Connect/Disconnect button
+        self.connect_button = tk.Button(self.button_frame, text="Connect", command=self.toggle_connection, height=3, width=20, font=("Arial", 16), bg="#34C759", fg="white", activebackground="#2ED47A", activeforeground="white", highlightthickness=0, bd=10, relief="ridge")
+        self.connect_button.pack(side="top", pady=10)
+
+        # Status button to display connection status
+        self.status_button = tk.Button(self.button_frame, text="Status: Disconnected", command=self.show_status, height=2, width=20, font=("Arial", 14), bg="#F7F7F7", fg="black", activebackground="#E5E5E5", activeforeground="black", highlightthickness=0, bd=10, relief="ridge")
+        self.status_button.pack(side="top", pady=10)
+
+        # Theme toggle button
+        self.theme_button = tk.Button(self.button_frame, text="Switch Theme", command=self.toggle_theme, height=2, width=20, font=("Arial", 14), bg="#F7F7F7", fg="black", activebackground="#E5E5E5", activeforeground="black", highlightthickness=0, bd=10, relief="ridge")
+        self.theme_button.pack(side="top", pady=10)
+
+        # Exit button
+        self.exit_button = tk.Button(self.button_frame, text="Exit", command=self.master.destroy, height=2, width=20, font=("Arial", 14), bg="#F7F7F7", fg="black", activebackground="#E5E5E5", activeforeground="black", highlightthickness=0, bd=5, relief="ridge", highlightbackground="red", highlightcolor="red")
+        self.exit_button.pack(side="top", pady=10)
+
+    def toggle_connection(self):
+        if self.connection_status == "Disconnected":
+            self.connection_status = "Connected"
+            self.connect_button.config(text="Disconnect", bg="#FF3B30")
+            self.status_button.config(text="Status: Connected")
+            threading.Thread(target=start_gesture_recognition, daemon=True).start()
+        else:
+            self.connection_status = "Disconnected"
+            self.connect_button.config(text="Connect", bg="#34C759")
+            self.status_button.config(text="Status: Disconnected")
+            stop_gesture_recognition()
+
+    def show_status(self):
+        messagebox.showinfo("Connection Status", f"Current status: {self.connection_status}")
+
+    def toggle_theme(self):
+        if self.theme == "light":
+            self.master.config(bg="#212121")
+            self.title_label.config(bg="#212121", fg="white")
+            self.connect_button.config(bg="#34C759", fg="white")
+            self.status_button.config(bg="#F7F7F7", fg="black")
+            self.theme_button.config(bg="#F7F7F7", fg="black")
+            self.exit_button.config(bg="#F7F7F7", fg="black")
+            self.theme = "dark"
+        else:
+            self.master.config(bg="white")
+            self.title_label.config(bg="white", fg="black")
+            self.connect_button.config(bg="#34C759", fg="white")
+            self.status_button.config(bg="#F7F7F7", fg="black")
+            self.theme_button.config(bg="#F7F7F7", fg="black")
+            self.exit_button.config(bg="#F7F7F7", fg="black")
+            self.theme = "light"
+
+# Initialize the Tkinter window
+root = tk.Tk()
+app = Application(master=root)
+app.mainloop()
