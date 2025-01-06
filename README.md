@@ -1,0 +1,1 @@
+This project leverages computer vision and machine learning to recognize hand gestures in real-time for various applications such as mouse control, navigation, and custom interactions. Using advanced techniques like MediaPipe and OpenCV, the system processes hand movements and provides seamless gesture-based functionalities.
